@@ -1,0 +1,17 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/bank_db?serverTimezone=Asia/Seoul
+    username: root
+    password: 3152
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update # 테이블 구조를 자동으로 맞춰줍니다.
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true

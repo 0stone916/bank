@@ -2,9 +2,12 @@ package com.bank.bankmock.service;
 
 import com.bank.bankmock.domain.Account;
 import com.bank.bankmock.domain.AccountRepository;
+import com.bank.bankmock.domain.Outbox;
+import com.bank.bankmock.domain.OutboxRepository;
 import com.bank.bankmock.domain.Transaction;
 import com.bank.bankmock.domain.TransactionRepository;
 import com.bank.bankmock.dto.PaymentRequest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -12,7 +15,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
 
 @Service
 @RequiredArgsConstructor
@@ -20,10 +22,11 @@ public class BankService {
 
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
-    private final RestTemplate restTemplate = new RestTemplate(); // 다른 서버에 요청 보낼 도구
+    private final OutboxRepository outboxRepository; 
+    private final ObjectMapper objectMapper;
 
     /**
-     * [추가] 유저 ID로 계좌 정보 조회 (SmartBudget 서버 호출용)
+     * 유저 ID로 계좌 정보 조회
      */
     @Transactional(readOnly = true)
     public Account getAccountByUserId(String userId) {
@@ -33,7 +36,7 @@ public class BankService {
 
     @Transactional
     public String processPayment(PaymentRequest request) {
-// 1. 계좌 조회 및 잔액 차감
+        // 1. 계좌 조회 및 잔액 차감
         Account account = accountRepository.findByUserId(request.getUserId())
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 계좌입니다."));
         
@@ -41,43 +44,40 @@ public class BankService {
 
         // 2. 승인번호 생성
         String approvalNo = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        LocalDateTime transactedAt = LocalDateTime.now();
 
-        // 3. [핵심 추가] bank_transaction 테이블에 내역 기록
-        // 결제 시점의 시각(transactedAt)이 여기서 결정됩니다.
+        // 3. bank_transaction 기록
         Transaction transaction = Transaction.builder()
                 .accountNumber(account.getAccountNumber())
                 .amount(request.getAmount())
                 .merchantName(request.getMerchantName())
                 .approvalNo(approvalNo)
-                .status("APPROVED") // 성공했으므로 승인 상태
-                .transactedAt(LocalDateTime.now()) // 실제 결제 시각 기록
+                .status("APPROVED")
+                .transactedAt(transactedAt)
                 .build();
-        
         transactionRepository.save(transaction);
 
-        // 4. SmartBudget-CMS로 결제 알림 전송 
-        sendNotificationToCms(request, approvalNo, transaction.getTransactedAt());
+        // 4. Outbox에 저장
+        String payload = createPayload(request, approvalNo, transactedAt);
+        outboxRepository.save(new Outbox("PAYMENT_NOTIFICATION", approvalNo, payload));
 
         return approvalNo;
     }
 
-    private void sendNotificationToCms(PaymentRequest request, String approvalNo, LocalDateTime transactedAt) {
-        String cmsUrl = "http://localhost:8080/api/v1/noti/payment"; // CMS 주소
-        
-        // 전송할 데이터 묶기
-        Map<String, Object> body = new HashMap<>();
-        body.put("userId", request.getUserId());
-        body.put("approvalNo", approvalNo);
-        body.put("accountNumber", request.getAccountNumber());
-        body.put("amount", request.getAmount());
-        body.put("merchantName", request.getMerchantName());
-        body.put("transactedAt", transactedAt);
-
+    private String createPayload(PaymentRequest request, String approvalNo, LocalDateTime transactedAt) {
         try {
-            // CMS로 POST 요청 전송
-            restTemplate.postForEntity(cmsUrl, body, String.class);
+            Map<String, Object> data = new HashMap<>();
+            data.put("userId", request.getUserId());
+            data.put("accountNumber", request.getAccountNumber());
+            data.put("amount", request.getAmount());
+            data.put("merchantName", request.getMerchantName()); 
+            data.put("approvalNo", approvalNo); 
+            data.put("transactedAt", transactedAt.toString()); 
+            data.put("type", "PAYMENT_CONFIRMED");
+
+            return objectMapper.writeValueAsString(data);
         } catch (Exception e) {
-            System.err.println("CMS 알림 전송 실패: " + e.getMessage());
+            throw new RuntimeException("Payload 생성 실패", e);
         }
     }
 }

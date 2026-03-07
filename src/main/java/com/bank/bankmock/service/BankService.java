@@ -4,18 +4,26 @@ import com.bank.bankmock.domain.Account;
 import com.bank.bankmock.domain.AccountRepository;
 import com.bank.bankmock.domain.Outbox;
 import com.bank.bankmock.domain.OutboxRepository;
+import com.bank.bankmock.domain.OutboxStatus;
 import com.bank.bankmock.domain.Transaction;
 import com.bank.bankmock.domain.TransactionRepository;
 import com.bank.bankmock.dto.PaymentRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
+
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class BankService {
@@ -24,6 +32,8 @@ public class BankService {
     private final TransactionRepository transactionRepository;
     private final OutboxRepository outboxRepository; 
     private final ObjectMapper objectMapper;
+    private final NotificationProducer notificationProducer;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 유저 ID로 계좌 정보 조회
@@ -61,6 +71,9 @@ public class BankService {
         String payload = createPayload(request, approvalNo, transactedAt);
         outboxRepository.save(new Outbox("PAYMENT_NOTIFICATION", approvalNo, payload));
 
+        // 5. 직접 호출 대신 이벤트를 발행 (Publish)
+        eventPublisher.publishEvent(payload); 
+
         return approvalNo;
     }
 
@@ -78,6 +91,40 @@ public class BankService {
             return objectMapper.writeValueAsString(data);
         } catch (Exception e) {
             throw new RuntimeException("Payload 생성 실패", e);
+        }
+    }
+
+    // 커밋 성공 시에만 실행
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Transactional(propagation = Propagation.REQUIRES_NEW) // 새로운 트랜잭션에서 상태 업데이트
+    public void handlePaymentCofirmed(String payload) {
+        
+        try {
+            // 1. Kafka 전송
+            notificationProducer.sendNotification(payload);
+            
+            // 2. 전송 성공 시 Outbox 상태 업데이트 (DONE)
+            updateOutboxStatus(payload, OutboxStatus.DONE);
+            
+        } catch (Exception e) {
+            // 3. 실패 시 상태 업데이트 (FAILED)
+            updateOutboxStatus(payload, OutboxStatus.FAILED);
+            log.error("Kafka 전송 실패로 인한 Outbox 상태 업데이트: {}", e.getMessage());
+        }
+    }
+
+    private void updateOutboxStatus(String payload, OutboxStatus status) {
+        try {
+            Map<String, Object> map = objectMapper.readValue(payload, Map.class);
+            String approvalNo = (String) map.get("approvalNo");
+            
+            outboxRepository.findByAggregateId(approvalNo)
+                .ifPresent(outbox -> {
+                    if (status == OutboxStatus.DONE) outbox.markAsDone();
+                    else outbox.markAsFailed();
+                });
+        } catch (Exception e) {
+            log.error("Outbox 상태 업데이트 중 오류 발생", e);
         }
     }
 }

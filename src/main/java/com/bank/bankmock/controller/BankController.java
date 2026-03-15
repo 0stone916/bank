@@ -5,11 +5,11 @@ import com.bank.bankmock.dto.PaymentRequest;
 import com.bank.bankmock.dto.PaymentResponse;
 import com.bank.bankmock.service.BankService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.UUID;
-
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/payments")
 @RequiredArgsConstructor
@@ -32,18 +32,18 @@ public class BankController {
 
     @PostMapping
     public ResponseEntity<PaymentResponse> requestPayment(@RequestBody PaymentRequest request) {
-        System.out.print(request.getUserId());
+        log.info("BankController 진입 - 수신된 결제 요청 데이터: {}", request);
         try {
             // 서비스 호출하여 결제 진행
             bankService.processPayment(request);
             
             // 성공 시: 승인번호 생성 및 응답
-            String approvalNo = UUID.randomUUID().toString().substring(0, 8); 
-            return ResponseEntity.ok(new PaymentResponse("APPROVED", approvalNo, "결제가 완료되었습니다."));
+            return ResponseEntity.ok(new PaymentResponse("APPROVED", "결제가 완료되었습니다."));
             
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
-                .body(new PaymentResponse("REJECTED", null, e.getMessage()));
+                .body(new PaymentResponse("REJECTED", e.getMessage()));
         }
     }
+
 }

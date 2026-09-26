@@ -3,7 +3,7 @@ server:
 
 spring:
   datasource:
-    url: jdbc:mysql://10.255.255.254:3306/bank_db?serverTimezone=Asia/Seoul
+    url: jdbc:mysql://localhost:3306/bank_db?serverTimezone=Asia/Seoul
     username: root
     password: 3152
     driver-class-name: com.mysql.cj.jdbc.Driver
